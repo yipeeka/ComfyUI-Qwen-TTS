@@ -30,6 +30,12 @@ from .nodes_faster import (
     FASTER_NODE_DISPLAY_NAME_MAPPINGS
 )
 
+# Import utility nodes
+from .nodes_utils import (
+    UTILS_NODE_CLASS_MAPPINGS,
+    UTILS_NODE_DISPLAY_NAME_MAPPINGS
+)
+
 # Node mappings
 NODE_CLASS_MAPPINGS = {
     "FB_Qwen3TTSVoiceClone": VoiceCloneNode,
@@ -63,6 +69,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 
 # Update display name mappings with faster nodes
 NODE_DISPLAY_NAME_MAPPINGS.update(FASTER_NODE_DISPLAY_NAME_MAPPINGS)
+
+# Update mappings with utility nodes
+NODE_CLASS_MAPPINGS.update(UTILS_NODE_CLASS_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS.update(UTILS_NODE_DISPLAY_NAME_MAPPINGS)
 
 # Version information
 __version__ = "1.0.6"

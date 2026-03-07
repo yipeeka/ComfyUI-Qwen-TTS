@@ -8,7 +8,7 @@ ComfyUI custom nodes for speech synthesis, voice cloning, and voice design, base
 
 ## 📋 Changelog
 
-- **2026-03-07**: Feature Update: Added **Faster Nodes** powered by CUDA Graphs (`faster-qwen3-tts`): VoiceClone, CustomVoice, VoiceDesign, RoleBank, DialogueInference. Added `config` input (pause control) to all Faster nodes. Fixed `unload_faster_model` to target specific cached models.
+- **2026-03-08**: Feature Update: Refactored **Faster RoleBank** to accept list inputs (`INPUT_IS_LIST`). Added **RoleBank Collector** (8 fixed slots → 3 parallel lists), **Role Accumulator** (stateful, for-loop safe), and **Append Any To List** utility node (`Qwen3-TTS/Utils`).
 - **2026-02-04**: Feature Update: Added Global Pause Control (`QwenTTSConfigNode`) and `extra_model_paths.yaml` support ([update.md](doc/update.md))
 - **2026-01-29**: Feature Update: Support for loading custom fine-tuned models & speakers ([update.md](doc/update.md))
   - *Note: Fine-tuning is currently experimental; zero-shot cloning is recommended for best results.*
@@ -147,12 +147,25 @@ Same purpose as `CustomVoiceNode` but backed by CUDA Graphs.
 Same purpose as `VoiceDesignNode` but backed by CUDA Graphs. Always uses the **1.7B-VoiceDesign** model.
 - **Inputs**: `text`, `instruct`, `language`, generation params, `config` (optional)
 
-#### 13. ⚡ Faster Role Bank (`FasterRoleBankNode`)
-Similar to `RoleBankNode` but stores raw **AUDIO** clips instead of `VOICE_CLONE_PROMPT` objects (required because the faster library only accepts file paths).
-- **Inputs**: Up to 8 roles — `role_name_N`, `audio_N` (AUDIO), `ref_text_N`
-- **Output**: `FASTER_ROLE_BANK`
+#### 13. ⚡ Faster Role Bank Collector (`FasterRoleBankCollectorNode`)
+Collects up to 8 individual (role_name, audio, ref_text) slots and outputs three parallel **lists** consumed by `FasterRoleBankNode`.
+- **Inputs**: Up to 8 groups — `role_name_N`, `audio_N` (AUDIO), `ref_text_N` (optional)
+- **Outputs**: `role_name` (STRING list), `audio` (AUDIO list), `ref_text` (STRING list)
+- **Usage**: Wire all three outputs to the matching inputs of `FasterRoleBankNode`.
 
-#### 14. ⚡ Faster Dialogue Inference (`FasterQwen3TTSDialogueInferenceNode`)
+#### 14. ⚡ Faster Role Bank (`FasterRoleBankNode`)
+Assembles a `FASTER_ROLE_BANK` dict from three parallel **lists** (uses `INPUT_IS_LIST = True`).
+- **Inputs**: `role_name` (STRING list), `audio` (AUDIO list), `ref_text` (STRING list, optional)
+- **Output**: `FASTER_ROLE_BANK`
+- **Typical source**: `FasterRoleBankCollectorNode` (fixed roles) or `FasterRoleAccumulatorNode` bank_out after a for-loop.
+
+#### 15. ⚡ Faster Role Accumulator (`FasterRoleAccumulatorNode`)
+Stateful role bank builder designed to run **inside a for-loop**. Appends one `(role_name, audio, ref_text)` triplet per iteration; outputs a growing `FASTER_ROLE_BANK`.
+- **Inputs**: `role_name`, `audio`, `accumulator_id` (unique string key), `reset` (True on first iteration), `ref_text` (optional)
+- **Outputs**: `bank_out` (FASTER_ROLE_BANK), `count` (INT)
+- **Usage**: Wire `bank_out` through the loop's `loopEnd` node; connect the final bank to `FasterDialogueInferenceNode` **outside** the loop.
+
+#### 16. ⚡ Faster Dialogue Inference (`FasterQwen3TTSDialogueInferenceNode`)
 Same purpose as `DialogueInferenceNode` but uses CUDA Graphs for per-line inference.
 - **Inputs**: `script`, `faster_role_bank`, `model_choice`, `language`, pause controls, generation params
 - **Note**: Processes lines sequentially (no `batch_size`) because the faster library does not support batched `VOICE_CLONE_PROMPT` objects.
@@ -165,7 +178,24 @@ All Faster nodes accept an optional **`config`** input from `QwenTTSConfigNode`.
 
 ```
 Standard:  LoadAudio → VoiceClonePromptNode → RoleBankNode → DialogueInferenceNode
-Faster:    LoadAudio ───────────────────────→ FasterRoleBankNode → FasterDialogueInferenceNode
+Faster (fixed roles):   LoadAudio → RoleBankCollectorNode → FasterRoleBankNode → FasterDialogueInferenceNode
+Faster (dynamic/loop):  [For Loop] → RoleAccumulatorNode → [loopEnd] → FasterDialogueInferenceNode
+```
+
+---
+
+## 🛠️ Utility Nodes (`Qwen3-TTS/Utils`)
+
+### 📋 Append Any To List (`AppendAnyToListNode`)
+Appends a single item of **any** ComfyUI type to a list, or starts a new list.
+- **Inputs**: `item` (\*, required), `list_in` (\*, optional — must come from a node with `OUTPUT_IS_LIST`)
+- **Output**: `list_out` (list, `OUTPUT_IS_LIST = True`)
+- **Usage**: Chain multiple nodes to build lists incrementally in static graphs. Not suitable for for-loops (use `FasterRoleAccumulatorNode` instead).
+
+```
+[AudioA] → item → [AppendAnyToList] ──list_out──► list_in → [AppendAnyToList] → list_out → [downstream]
+                                                              ↑
+                                                    [AudioB] → item
 ```
 
 ---

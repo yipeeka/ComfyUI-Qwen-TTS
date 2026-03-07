@@ -8,7 +8,7 @@
 
 ## 📋 更新日志
 
-- **2026-03-07**: 功能更新：新增基于 CUDA Graphs 的 **Faster 节点**（`faster-qwen3-tts`）：VoiceClone、CustomVoice、VoiceDesign、RoleBank、DialogueInference。所有 Faster 节点支持 `config` 停顿控制输入。修复 `unload_faster_model` 现在可以精确卸载单个缓存模型。
+- **2026-03-08**: 功能更新：重构 **Faster RoleBank** 为 list 类型输入（`INPUT_IS_LIST`）。新增 **RoleBank Collector**（8 固定槽 → 3 并行 list）、**Role Accumulator**（有状态、for-loop 安全）以及 **Append Any To List** 工具节点（`Qwen3-TTS/Utils`）。
 - **2026-02-04**: 功能更新：添加全局停顿控制 (`QwenTTSConfigNode`) 与 `extra_model_paths.yaml` 支持 ([update.md](doc/update.md))
 - **2026-01-29**: 功能更新：支持加载自定义微调模型和 Speaker ([update.md](doc/update.md))
   - *注意：微调功能目前为实验性；推荐直接使用声音克隆以获得最佳效果。*
@@ -148,12 +148,25 @@ pip install faster-qwen3-tts
 功能与 `VoiceDesignNode` 相同，基于 CUDA Graphs 加速，固定使用 **1.7B-VoiceDesign** 模型。
 - **输入**: `text`、`instruct`、`language`、生成参数、`config`（可选）
 
-#### 13. ⚡ Faster 角色银行 (`FasterRoleBankNode`)
-类似 `RoleBankNode`，但存储原始 **AUDIO** 音频（因为 faster 库只接受文件路径，不支持 `VOICE_CLONE_PROMPT` 对象）。
-- **输入**: 最多 8 个角色 — `role_name_N`、`audio_N`（AUDIO 类型）、`ref_text_N`
-- **输出**: `FASTER_ROLE_BANK`
+#### 13. ⚡ Faster 角色收集器 (`FasterRoleBankCollectorNode`)
+收集最多 8 个 `(role_name, audio, ref_text)` 槽，输出三条并行 **list**，供 `FasterRoleBankNode` 消费。
+- **输入**: 最多 8 组 — `role_name_N`、`audio_N`（AUDIO）、`ref_text_N`（可选）
+- **输出**: `role_name`（STRING list）、`audio`（AUDIO list）、`ref_text`（STRING list）
+- **用法**: 将三个输出分别连接到 `FasterRoleBankNode` 对应的输入端口。
 
-#### 14. ⚡ Faster 多角色对话 (`FasterQwen3TTSDialogueInferenceNode`)
+#### 14. ⚡ Faster 角色银行 (`FasterRoleBankNode`)
+从三条并行 **list** 组装 `FASTER_ROLE_BANK` 字典（使用 `INPUT_IS_LIST = True`）。
+- **输入**: `role_name`（STRING list）、`audio`（AUDIO list）、`ref_text`（STRING list，可选）
+- **输出**: `FASTER_ROLE_BANK`
+- **常见来源**: 固定角色用 `FasterRoleBankCollectorNode`；动态角色用 for-loop + `FasterRoleAccumulatorNode` 的 `bank_out`。
+
+#### 15. ⚡ Faster 角色累积器 (`FasterRoleAccumulatorNode`)
+有状态累积器，专为 **for-loop 内部**使用设计。每次迭代追加一个 `(role_name, audio, ref_text)` 三元组，输出不断增长的 `FASTER_ROLE_BANK`。
+- **输入**: `role_name`、`audio`、`accumulator_id`（唯一字符串 key）、`reset`（第一次迭代设为 True）、`ref_text`（可选）
+- **输出**: `bank_out`（FASTER_ROLE_BANK）、`count`（INT）
+- **用法**: 将 `bank_out` 通过 loop 的 `loopEnd` 节点透传；在循环**外部**将最终 bank 连接到 `FasterDialogueInferenceNode`。
+
+#### 16. ⚡ Faster 多角色对话 (`FasterQwen3TTSDialogueInferenceNode`)
 功能与 `DialogueInferenceNode` 相同，基于 CUDA Graphs 逐行推理。
 - **输入**: `script`、`faster_role_bank`、`model_choice`、`language`、停顿控制参数、生成参数
 - **说明**: 逐行串行推理（无 `batch_size` 参数），因为 faster 库不支持批量 `VOICE_CLONE_PROMPT`。
@@ -165,8 +178,25 @@ pip install faster-qwen3-tts
 ### 工作流对比
 
 ```
-标准流程:  LoadAudio → VoiceClonePromptNode → RoleBankNode      → DialogueInferenceNode
-Faster流程: LoadAudio ────────────────────→ FasterRoleBankNode → FasterDialogueInferenceNode
+标准流程:         LoadAudio → VoiceClonePromptNode → RoleBankNode → DialogueInferenceNode
+Faster（固定角色）: LoadAudio → RoleBankCollectorNode → FasterRoleBankNode → FasterDialogueInferenceNode
+Faster（动态/循环）: [For Loop] → RoleAccumulatorNode → [loopEnd] → FasterDialogueInferenceNode
+```
+
+---
+
+## 🛠️ 工具节点（`Qwen3-TTS/Utils`）
+
+### 📋 Append Any To List（`AppendAnyToListNode`）
+将任意 ComfyUI 类型的单个 item 追加到一个 list，或从零开始创建新 list。
+- **输入**: `item`（\*，必填）、`list_in`（\*，可选 — 须来自 `OUTPUT_IS_LIST` 节点）
+- **输出**: `list_out`（list，`OUTPUT_IS_LIST = True`）
+- **用法**: 在**静态图**中通过链式连接逐个构建 list。不适用于 for-loop（for-loop 请用 `FasterRoleAccumulatorNode`）。
+
+```
+[音频A] → item → [AppendAnyToList] ──list_out──► list_in → [AppendAnyToList] → list_out → [下游节点]
+                                                              ↑
+                                               [音频B] → item
 ```
 
 ---

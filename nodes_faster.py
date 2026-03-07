@@ -446,6 +446,76 @@ class FasterQwen3TTSVoiceDesignNode:
 # Stores raw ComfyUI AUDIO per role (faster lib needs file paths, not prompt objs)
 # ─────────────────────────────────────────────────────────────────────────────
 class FasterRoleBankNode:
+    """
+    Accepts three list inputs (role_name, audio, ref_text) via INPUT_IS_LIST = True.
+    Upstream nodes must output list types (e.g. a batch/list collector node).
+    Each list index i corresponds to one role: role_name[i], audio[i], ref_text[i].
+    """
+
+    INPUT_IS_LIST = True
+    OUTPUT_IS_LIST = (False,)
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "role_name": ("STRING", {
+                    "forceInput": True,
+                    "tooltip": "List of role names (one per role)",
+                }),
+                "audio": ("AUDIO", {
+                    "forceInput": True,
+                    "tooltip": "List of reference AUDIO clips (same order as role_name)",
+                }),
+            },
+            "optional": {
+                "ref_text": ("STRING", {
+                    "forceInput": True,
+                    "tooltip": "List of ref transcripts (optional, same order as role_name)",
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("FASTER_ROLE_BANK",)
+    RETURN_NAMES = ("faster_role_bank",)
+    FUNCTION = "create_bank"
+    CATEGORY = "Qwen3-TTS/Faster"
+    DESCRIPTION = "⚡ Faster RoleBank: Map role names to reference AUDIO clips for dialogue inference."
+
+    def create_bank(self, role_name: list, audio: list, ref_text: list = None):
+        """
+        role_name : list[str]  – names of each role
+        audio     : list[dict] – ComfyUI AUDIO dicts
+        ref_text  : list[str]  – optional transcripts; defaults to empty strings
+        Returns: {role_name: {"audio": <ComfyUI AUDIO dict>, "ref_text": str}}
+        """
+        ref_texts = ref_text if ref_text else [""] * len(role_name)
+        bank = {}
+        for name, aud, rt in zip(role_name, audio, ref_texts):
+            n = name.strip() if isinstance(name, str) else str(name).strip()
+            r = rt.strip() if isinstance(rt, str) else ""
+            if n and aud is not None:
+                bank[n] = {"audio": aud, "ref_text": r}
+        return (bank,)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Node: Faster Role Bank Collector
+# Collects individual (role_name, audio, ref_text) slots → three parallel lists
+# for FasterRoleBankNode which uses INPUT_IS_LIST = True.
+# ─────────────────────────────────────────────────────────────────────────────
+class FasterRoleBankCollectorNode:
+    """
+    Collects up to 8 (role_name, audio, ref_text) slot groups and outputs three
+    parallel lists consumed by FasterRoleBankNode (INPUT_IS_LIST = True).
+
+    Wiring:
+        role_name  → FasterRoleBankNode.role_name
+        audio      → FasterRoleBankNode.audio
+        ref_text   → FasterRoleBankNode.ref_text  (optional)
+    """
+
+    OUTPUT_IS_LIST = (True, True, True)   # all three outputs are lists
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -458,28 +528,32 @@ class FasterRoleBankNode:
                 "AUDIO", {"tooltip": f"Reference audio for role {i}"}
             )
             inputs["optional"][f"ref_text_{i}"] = (
-                "STRING", {"default": "", "tooltip": f"Transcript of reference audio for role {i} (optional)"}
+                "STRING", {"default": "", "tooltip": f"Transcript for role {i} (optional)"}
             )
         return inputs
 
-    RETURN_TYPES = ("FASTER_ROLE_BANK",)
-    RETURN_NAMES = ("faster_role_bank",)
-    FUNCTION = "create_bank"
+    RETURN_TYPES = ("STRING", "AUDIO", "STRING")
+    RETURN_NAMES = ("role_name", "audio", "ref_text")
+    FUNCTION = "collect"
     CATEGORY = "Qwen3-TTS/Faster"
-    DESCRIPTION = "⚡ Faster RoleBank: Map role names to reference AUDIO clips for dialogue inference."
+    DESCRIPTION = (
+        "⚡ Faster RoleBank Collector: Gather up to 8 role slots into parallel lists "
+        "for FasterRoleBankNode."
+    )
 
-    def create_bank(self, **kwargs):
-        """
-        Returns a dict: {role_name: {"audio": <ComfyUI AUDIO dict>, "ref_text": str}}
-        """
-        bank = {}
+    def collect(self, **kwargs):
+        names, audios, texts = [], [], []
         for i in range(1, 9):
             name = kwargs.get(f"role_name_{i}", "").strip()
             audio = kwargs.get(f"audio_{i}")
             ref_text = kwargs.get(f"ref_text_{i}", "").strip()
             if name and audio is not None:
-                bank[name] = {"audio": audio, "ref_text": ref_text}
-        return (bank,)
+                names.append(name)
+                audios.append(audio)
+                texts.append(ref_text)
+        if not names:
+            raise RuntimeError("FasterRoleBankCollectorNode: no valid (role_name + audio) pairs provided.")
+        return (names, audios, texts)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -677,13 +751,90 @@ class FasterQwen3TTSDialogueInferenceNode:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Node: Faster Role Accumulator  (for-loop safe)
+#
+# Designed for use INSIDE an easy-use (or similar) for-loop.
+# Each iteration appends ONE role triplet (name + audio + ref_text) to an
+# internal store keyed by `accumulator_id`.
+#
+# After the loop, wire the LAST iteration's `bank_out` (via loopEnd passthrough)
+# directly to FasterQwen3TTSDialogueInferenceNode — it will contain all roles.
+#
+# Typical wiring:
+#   [For Loop Open]
+#       │
+#       ├─ role_name ─►┐
+#       ├─ audio     ─►├─► [FasterRoleAccumulator] ─► bank_out ─► [For Loop Close / loopEnd]
+#       └─ ref_text  ─►┘                                                │
+#                                                                        ▼ (final iteration)
+#                                                              [DialogueInference]
+# ─────────────────────────────────────────────────────────────────────────────
+class FasterRoleAccumulatorNode:
+    """
+    Stateful role bank accumulator. Appends one (role_name, audio, ref_text)
+    triplet per execution. Use reset=True on the first loop iteration.
+
+    bank_out always reflects the CURRENT accumulated state, so the last
+    loop iteration yields the complete bank.
+    """
+
+    _store: dict = {}  # class-level: survives across node executions
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "role_name":      ("STRING",  {"forceInput": True, "tooltip": "Role name for this iteration"}),
+                "audio":          ("AUDIO",   {"tooltip": "Reference audio for this role"}),
+                "accumulator_id": ("STRING",  {"default": "roles", "tooltip": "Unique key — use different IDs for parallel accumulators"}),
+                "reset":          ("BOOLEAN", {"default": False,   "tooltip": "True = clear store before appending (use on first iteration)"}),
+            },
+            "optional": {
+                "ref_text": ("STRING", {"default": "", "tooltip": "Transcript of the reference audio (optional)"}),
+            },
+        }
+
+    RETURN_TYPES = ("FASTER_ROLE_BANK", "INT")
+    RETURN_NAMES = ("bank_out", "count")
+    FUNCTION = "accumulate"
+    CATEGORY = "Qwen3-TTS/Faster"
+    DESCRIPTION = (
+        "⚡ Faster Role Accumulator: append one role per loop iteration, "
+        "output grows each time. Wire bank_out through loopEnd to DialogueInference."
+    )
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # Never cache — must re-execute on every iteration
+        import time
+        return time.time()
+
+    def accumulate(self, role_name: str, audio, accumulator_id: str, reset: bool, ref_text: str = ""):
+        if reset or accumulator_id not in self._store:
+            self._store[accumulator_id] = {}
+
+        name = role_name.strip()
+        if name and audio is not None:
+            self._store[accumulator_id][name] = {
+                "audio":    audio,
+                "ref_text": ref_text.strip(),
+            }
+
+        bank = dict(self._store[accumulator_id])
+        print(f"⚡ [RoleAccumulator:{accumulator_id}] roles so far: {list(bank.keys())}")
+        return (bank, len(bank))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Exported mappings (consumed by __init__.py)
 # ─────────────────────────────────────────────────────────────────────────────
 FASTER_NODE_CLASS_MAPPINGS = {
     "FB_FasterQwen3TTSVoiceClone":        FasterQwen3TTSVoiceCloneNode,
     "FB_FasterQwen3TTSCustomVoice":       FasterQwen3TTSCustomVoiceNode,
     "FB_FasterQwen3TTSVoiceDesign":       FasterQwen3TTSVoiceDesignNode,
+    "FB_FasterQwen3TTSRoleBankCollector": FasterRoleBankCollectorNode,
     "FB_FasterQwen3TTSRoleBank":          FasterRoleBankNode,
+    "FB_FasterQwen3TTSRoleAccumulator":   FasterRoleAccumulatorNode,
     "FB_FasterQwen3TTSDialogueInference": FasterQwen3TTSDialogueInferenceNode,
 }
 
@@ -691,6 +842,8 @@ FASTER_NODE_DISPLAY_NAME_MAPPINGS = {
     "FB_FasterQwen3TTSVoiceClone":        "⚡ Faster Qwen3-TTS VoiceClone",
     "FB_FasterQwen3TTSCustomVoice":       "⚡ Faster Qwen3-TTS CustomVoice",
     "FB_FasterQwen3TTSVoiceDesign":       "⚡ Faster Qwen3-TTS VoiceDesign",
+    "FB_FasterQwen3TTSRoleBankCollector": "⚡ Faster Qwen3-TTS RoleBank Collector",
     "FB_FasterQwen3TTSRoleBank":          "⚡ Faster Qwen3-TTS RoleBank",
+    "FB_FasterQwen3TTSRoleAccumulator":   "⚡ Faster Qwen3-TTS Role Accumulator",
     "FB_FasterQwen3TTSDialogueInference": "⚡ Faster Qwen3-TTS DialogueInference",
 }
