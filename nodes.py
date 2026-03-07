@@ -11,7 +11,6 @@ import folder_paths
 import types
 
 from comfy import model_management
-from comfy import model_management
 from comfy.utils import ProgressBar
 
 # Register "qwen-tts" model folder for extra_model_paths.yaml support
@@ -365,16 +364,11 @@ def load_qwen_model(model_type: str, model_choice: str, device: str, precision: 
         else:
             device = "cpu"
     
-    # 强制 Mac 使用 float16 或 bfloat16 (MPS 跑 float32 会很慢)
-    if device == "mps" and precision == "bf16":
-        dtype = torch.bfloat16
-    elif device == "mps":
-        dtype = torch.float16
+    # MPS (Apple Silicon) dtype handling — bfloat16 is not supported on MPS
+    if device == "mps":
+        dtype = torch.bfloat16 if precision == "bf16" else torch.float16
     else:
         dtype = torch.bfloat16 if precision == "bf16" else torch.float32
-    
-    # Set precision
-    dtype = torch.bfloat16 if precision == "bf16" else torch.float32
     
     # VoiceDesign restriction
     if model_type == "VoiceDesign" and model_choice == "0.6B":
@@ -406,8 +400,6 @@ def load_qwen_model(model_type: str, model_choice: str, device: str, precision: 
                 base_paths.append(alt_qwen_tts_dir)
     except Exception:
         pass
-    
-    except Exception: pass
 
     # Check registered "qwen-tts" paths (includes extra_model_paths.yaml)
     try:
@@ -944,7 +936,8 @@ class CustomVoiceNode:
         return {
             "required": {
                 "text": ("STRING", {"multiline": True, "default": "Hello world", "placeholder": "Enter text to synthesize"}),
-                "speaker": (["Aiden", "Dylan", "Eric", "Ono_anna", "Ryan", "Serena", "Sohee", "Uncle_fu", "Vivian"], {"default": "Ryan"}),
+                # "speaker": (["Aiden", "Dylan", "Eric", "Ono_anna", "Ryan", "Serena", "Sohee", "Uncle_fu", "Vivian"], {"default": "Ryan"}),
+                "speaker": ("STRING", {"default": "Serena"}),
                 "model_choice": (["0.6B", "1.7B"], {"default": "1.7B"}),
                 "device": (["auto", "cuda","mps", "cpu"], {"default": "auto"}),
                 "precision": (["bf16", "fp32"], {"default": "bf16"}),

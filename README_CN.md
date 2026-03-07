@@ -8,6 +8,7 @@
 
 ## 📋 更新日志
 
+- **2026-03-07**: 功能更新：新增基于 CUDA Graphs 的 **Faster 节点**（`faster-qwen3-tts`）：VoiceClone、CustomVoice、VoiceDesign、RoleBank、DialogueInference。所有 Faster 节点支持 `config` 停顿控制输入。修复 `unload_faster_model` 现在可以精确卸载单个缓存模型。
 - **2026-02-04**: 功能更新：添加全局停顿控制 (`QwenTTSConfigNode`) 与 `extra_model_paths.yaml` 支持 ([update.md](doc/update.md))
 - **2026-01-29**: 功能更新：支持加载自定义微调模型和 Speaker ([update.md](doc/update.md))
   - *注意：微调功能目前为实验性；推荐直接使用声音克隆以获得最佳效果。*
@@ -35,6 +36,7 @@
 - ⏱️ **超低延迟**: 基于创新架构，支持极速语音重建与流式生成。
 - 🧠 **注意力机制选择**: 支持多种注意力实现 (sage_attn, flash_attn, sdpa, eager)，自动检测并优雅降级。
 - 💾 **内存管理**: 可选择在生成后卸载模型，释放 GPU 内存。
+- ⚡ **Faster 节点**（CUDA Graphs）：基于 `faster-qwen3-tts` 的加速节点组，通过 CUDA 图捕获显著降低推理延迟。
 
 ## 节点列表
 
@@ -116,6 +118,58 @@
   - `question_pause`: 问号 (?) 后的停顿时间。
   - `hyphen_pause`: 连字符 (-) 后的停顿时间。
 - **用法**: 连接到其他 TTS 节点的 `config` 输入端。
+
+---
+
+## ⚡ Faster 节点（CUDA Graphs）
+
+位于 `Qwen3-TTS/Faster` 分类下的加速节点组，基于 [`faster-qwen3-tts`](https://github.com/andimarafioti/faster-qwen3-tts) 库。首次运行时捕获 CUDA 图，后续调用复用，推理延迟显著降低。
+
+### 安装
+
+```bash
+pip install faster-qwen3-tts
+```
+
+> 与标准节点共用模型权重，无需重复下载。
+
+### Faster 节点列表
+
+#### 10. ⚡ Faster 声音克隆 (`FasterQwen3TTSVoiceCloneNode`)
+功能与 `VoiceCloneNode` 相同，基于 CUDA Graphs 加速。
+- **输入**: `target_text`、`ref_audio`（AUDIO 类型）、`model_choice`、`language`、生成参数、`config`（可选）
+- **额外参数**: `xvec_only`（x-vector 快速模式）、`non_streaming_mode`、`append_silence`
+
+#### 11. ⚡ Faster 预设声音 (`FasterQwen3TTSCustomVoiceNode`)
+功能与 `CustomVoiceNode` 相同，基于 CUDA Graphs 加速。
+- **输入**: `text`、`speaker`、`language`、`instruct`、生成参数、`config`（可选）
+
+#### 12. ⚡ Faster 声音设计 (`FasterQwen3TTSVoiceDesignNode`)
+功能与 `VoiceDesignNode` 相同，基于 CUDA Graphs 加速，固定使用 **1.7B-VoiceDesign** 模型。
+- **输入**: `text`、`instruct`、`language`、生成参数、`config`（可选）
+
+#### 13. ⚡ Faster 角色银行 (`FasterRoleBankNode`)
+类似 `RoleBankNode`，但存储原始 **AUDIO** 音频（因为 faster 库只接受文件路径，不支持 `VOICE_CLONE_PROMPT` 对象）。
+- **输入**: 最多 8 个角色 — `role_name_N`、`audio_N`（AUDIO 类型）、`ref_text_N`
+- **输出**: `FASTER_ROLE_BANK`
+
+#### 14. ⚡ Faster 多角色对话 (`FasterQwen3TTSDialogueInferenceNode`)
+功能与 `DialogueInferenceNode` 相同，基于 CUDA Graphs 逐行推理。
+- **输入**: `script`、`faster_role_bank`、`model_choice`、`language`、停顿控制参数、生成参数
+- **说明**: 逐行串行推理（无 `batch_size` 参数），因为 faster 库不支持批量 `VOICE_CLONE_PROMPT`。
+
+### Config（停顿控制）支持
+
+所有 Faster 节点均支持可选的 **`config`** 输入（来自 `QwenTTSConfigNode`）。连接后，文本会自动按标点分段并在段间插入静音，行为与标准节点完全一致。
+
+### 工作流对比
+
+```
+标准流程:  LoadAudio → VoiceClonePromptNode → RoleBankNode      → DialogueInferenceNode
+Faster流程: LoadAudio ────────────────────→ FasterRoleBankNode → FasterDialogueInferenceNode
+```
+
+---
 
 ## 注意力机制
 
@@ -222,6 +276,11 @@ qwen-tts: D:\MyAI\Models\Qwen
 - **批量大小**: 增加 `batch_size` 以加快生成速度（占用更多显存）。
 - **暂停**: 调整 `pause_seconds` 以控制对话段之间的 timing。
 - **合并**: 启用 `merge_outputs` 以获得连续对话；禁用以分别生成片段。
+
+### Faster 节点
+- **首次运行**: 首次推理时会进行 CUDA 图捕获，预热时间较长，后续调用速度显著更快。
+- **对话**: 使用 `FasterRoleBankNode`（AUDIO 输入）代替标准 `RoleBankNode`（VOICE_CLONE_PROMPT 输入）。
+- **停顿控制**: 将 `QwenTTSConfigNode` 连接到任意 Faster 节点的 `config` 输入，即可启用标点停顿控制。
 
 ## 致谢
 

@@ -24,6 +24,12 @@ from .nodes import (
 )
 from .train import Qwen3TTS_Train_Node
 
+# Import faster nodes
+from .nodes_faster import (
+    FASTER_NODE_CLASS_MAPPINGS,
+    FASTER_NODE_DISPLAY_NAME_MAPPINGS
+)
+
 # Node mappings
 NODE_CLASS_MAPPINGS = {
     "FB_Qwen3TTSVoiceClone": VoiceCloneNode,
@@ -38,6 +44,9 @@ NODE_CLASS_MAPPINGS = {
     "FB_Qwen3TTSTrain": Qwen3TTS_Train_Node,
 }
 
+# Update mappings with faster nodes
+NODE_CLASS_MAPPINGS.update(FASTER_NODE_CLASS_MAPPINGS)
+
 # Node display name mappings
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FB_Qwen3TTSVoiceClone": "🎭 Qwen3-TTS VoiceClone",
@@ -51,6 +60,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FB_Qwen3TTSConfig": "⚙️ Qwen3-TTS Config (Pause Control)",
     "FB_Qwen3TTSTrain": "🏋️ Qwen3-TTS Train",
 }
+
+# Update display name mappings with faster nodes
+NODE_DISPLAY_NAME_MAPPINGS.update(FASTER_NODE_DISPLAY_NAME_MAPPINGS)
 
 # Version information
 __version__ = "1.0.6"

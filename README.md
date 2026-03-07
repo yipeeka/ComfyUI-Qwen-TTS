@@ -8,6 +8,7 @@ ComfyUI custom nodes for speech synthesis, voice cloning, and voice design, base
 
 ## 📋 Changelog
 
+- **2026-03-07**: Feature Update: Added **Faster Nodes** powered by CUDA Graphs (`faster-qwen3-tts`): VoiceClone, CustomVoice, VoiceDesign, RoleBank, DialogueInference. Added `config` input (pause control) to all Faster nodes. Fixed `unload_faster_model` to target specific cached models.
 - **2026-02-04**: Feature Update: Added Global Pause Control (`QwenTTSConfigNode`) and `extra_model_paths.yaml` support ([update.md](doc/update.md))
 - **2026-01-29**: Feature Update: Support for loading custom fine-tuned models & speakers ([update.md](doc/update.md))
   - *Note: Fine-tuning is currently experimental; zero-shot cloning is recommended for best results.*
@@ -35,6 +36,7 @@ ComfyUI custom nodes for speech synthesis, voice cloning, and voice design, base
 - ⏱️ **Ultra-Low Latency**: Supports high-fidelity speech reconstruction with low-latency streaming.
 - 🧠 **Attention Mechanism Selection**: Choose from multiple attention implementations (sage_attn, flash_attn, sdpa, eager) with auto-detection and graceful fallback.
 - 💾 **Memory Management**: Optional model unloading after generation to free GPU memory for users with limited VRAM.
+- ⚡ **Faster Nodes** (CUDA Graphs): A parallel set of nodes backed by `faster-qwen3-tts` for significantly faster inference via CUDA graph capture.
 
 ## Nodes List
 
@@ -115,6 +117,58 @@ Define global pause durations for punctuation to control speech rhythm.
   - `question_pause`: Silence after question marks (?).
   - `hyphen_pause`: Silence after hyphens (-).
 - **Usage**: Connect output to the `config` input of other TTS nodes.
+
+---
+
+## ⚡ Faster Nodes (CUDA Graphs)
+
+A parallel set of nodes under the `Qwen3-TTS/Faster` category, backed by the [`faster-qwen3-tts`](https://github.com/andimarafioti/faster-qwen3-tts) library. CUDA Graphs are captured on first run and reused for all subsequent calls, giving a significant latency reduction.
+
+### Installation
+
+```bash
+pip install faster-qwen3-tts
+```
+
+> All standard model weights are shared — no separate download required.
+
+### Faster Nodes List
+
+#### 10. ⚡ Faster Voice Clone (`FasterQwen3TTSVoiceCloneNode`)
+Same purpose as `VoiceCloneNode` but backed by CUDA Graphs.
+- **Inputs**: `target_text`, `ref_audio` (AUDIO), `model_choice`, `language`, generation params, `config` (optional)
+- **Key extras**: `xvec_only` (x-vector fast mode), `non_streaming_mode`, `append_silence`
+
+#### 11. ⚡ Faster Custom Voice (`FasterQwen3TTSCustomVoiceNode`)
+Same purpose as `CustomVoiceNode` but backed by CUDA Graphs.
+- **Inputs**: `text`, `speaker`, `language`, `instruct`, generation params, `config` (optional)
+
+#### 12. ⚡ Faster Voice Design (`FasterQwen3TTSVoiceDesignNode`)
+Same purpose as `VoiceDesignNode` but backed by CUDA Graphs. Always uses the **1.7B-VoiceDesign** model.
+- **Inputs**: `text`, `instruct`, `language`, generation params, `config` (optional)
+
+#### 13. ⚡ Faster Role Bank (`FasterRoleBankNode`)
+Similar to `RoleBankNode` but stores raw **AUDIO** clips instead of `VOICE_CLONE_PROMPT` objects (required because the faster library only accepts file paths).
+- **Inputs**: Up to 8 roles — `role_name_N`, `audio_N` (AUDIO), `ref_text_N`
+- **Output**: `FASTER_ROLE_BANK`
+
+#### 14. ⚡ Faster Dialogue Inference (`FasterQwen3TTSDialogueInferenceNode`)
+Same purpose as `DialogueInferenceNode` but uses CUDA Graphs for per-line inference.
+- **Inputs**: `script`, `faster_role_bank`, `model_choice`, `language`, pause controls, generation params
+- **Note**: Processes lines sequentially (no `batch_size`) because the faster library does not support batched `VOICE_CLONE_PROMPT` objects.
+
+### Config (Pause Control) Support
+
+All Faster nodes accept an optional **`config`** input from `QwenTTSConfigNode`. When connected, text is automatically split into segments at punctuation marks and silence is inserted between segments — identical behaviour to the standard nodes.
+
+### Workflow
+
+```
+Standard:  LoadAudio → VoiceClonePromptNode → RoleBankNode → DialogueInferenceNode
+Faster:    LoadAudio ───────────────────────→ FasterRoleBankNode → FasterDialogueInferenceNode
+```
+
+---
 
 ## Attention Mechanisms
 
@@ -223,6 +277,11 @@ qwen-tts: D:\MyModels\Qwen
 - **Batch Size**: Increase `batch_size` for faster generation (more VRAM usage).
 - **Pauses**: Adjust `pause_seconds` to control timing between dialogue segments.
 - **Merge**: Enable `merge_outputs` for continuous dialogue; disable for separate clips.
+
+### Faster Nodes
+- **First Run**: CUDA Graphs are captured on first inference — expect a warm-up delay. Subsequent calls are significantly faster.
+- **Dialogue**: Use `FasterRoleBankNode` (AUDIO inputs) instead of the standard `RoleBankNode` (VOICE_CLONE_PROMPT inputs).
+- **Pause config**: Connect `QwenTTSConfigNode` to the `config` input of any Faster node for punctuation-based pause control.
 
 ## Acknowledgments
 

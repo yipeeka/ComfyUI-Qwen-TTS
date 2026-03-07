@@ -10,7 +10,8 @@ tiktoken
 sentencepiece
 sox
 huggingface_hub
-onnxruntime
+# Use onnxruntime-gpu for CUDA support (includes CPU fallback).
+# If you don't have a GPU, replace with: onnxruntime
 onnxruntime-gpu
 safetensors
 scipy>=1.11.0
