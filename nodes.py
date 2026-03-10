@@ -1159,6 +1159,87 @@ class RoleBankNode:
         return (bank,)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Node: Role Accumulator  (for-loop safe)
+#
+# Works like FasterRoleAccumulatorNode but for the standard Qwen3-TTS pipeline.
+# Each iteration appends ONE (role_name, voice_clone_prompt) pair to an
+# internal store keyed by `accumulator_id`.
+#
+# After the loop, wire the LAST iteration's `role_bank` (via loopEnd passthrough)
+# directly to DialogueInferenceNode — it will contain all roles.
+#
+# Typical wiring:
+#   [For Loop Open]
+#       │
+#       ├─ role_name          ─►┐
+#       └─ voice_clone_prompt ─►├─► [RoleAccumulator] ─► role_bank ─► [For Loop Close]
+#                                                                            │
+#                                                                    (final iteration)
+#                                                                    [DialogueInference]
+# ─────────────────────────────────────────────────────────────────────────────
+class RoleAccumulatorNode:
+    """
+    Stateful role bank accumulator for the standard Qwen3-TTS pipeline.
+    Appends one (role_name, voice_clone_prompt) pair per execution.
+    Use reset=True on the first loop iteration to start fresh.
+
+    bank_out always reflects the CURRENT accumulated state, so the last
+    loop iteration yields the complete QWEN3_ROLE_BANK.
+    """
+
+    _store: dict = {}  # class-level: survives across node executions
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "role_name": ("STRING", {
+                    "forceInput": True,
+                    "tooltip": "Role name for this iteration",
+                }),
+                "voice_clone_prompt": ("VOICE_CLONE_PROMPT", {
+                    "tooltip": "Pre-extracted voice prompt from VoiceClonePromptNode",
+                }),
+                "accumulator_id": ("STRING", {
+                    "default": "roles",
+                    "tooltip": "Unique key — use different IDs for parallel accumulators",
+                }),
+                "reset": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "True = clear store before appending (use on first iteration)",
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("QWEN3_ROLE_BANK", "INT")
+    RETURN_NAMES = ("role_bank", "count")
+    FUNCTION = "accumulate"
+    CATEGORY = "Qwen3-TTS"
+    DESCRIPTION = (
+        "📇 Role Accumulator: append one role per loop iteration, "
+        "output grows each time. Wire role_bank through loopEnd to DialogueInference."
+    )
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # Never cache — must re-execute on every iteration
+        import time
+        return time.time()
+
+    def accumulate(self, role_name: str, voice_clone_prompt, accumulator_id: str, reset: bool):
+        if reset or accumulator_id not in self._store:
+            self._store[accumulator_id] = {}
+
+        name = role_name.strip()
+        if name and voice_clone_prompt is not None:
+            self._store[accumulator_id][name] = voice_clone_prompt
+
+        bank = dict(self._store[accumulator_id])
+        print(f"📇 [RoleAccumulator:{accumulator_id}] roles so far: {list(bank.keys())}")
+        return (bank, len(bank))
+
+
 class DialogueInferenceNode:
     """
     DialogueInference Node: Generate multi-role continuous dialogue from a script.

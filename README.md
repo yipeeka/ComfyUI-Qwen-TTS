@@ -8,6 +8,7 @@ ComfyUI custom nodes for speech synthesis, voice cloning, and voice design, base
 
 ## 📋 Changelog
 
+- **2026-03-10**: Feature Update: Added **Role Accumulator** node for the standard Qwen3-TTS pipeline (`DialogueInferenceNode`), mirroring the Faster Role Accumulator for for-loop-based dialogue bank building.
 - **2026-03-08**: Feature Update: Refactored **Faster RoleBank** to accept list inputs (`INPUT_IS_LIST`). Added **RoleBank Collector** (8 fixed slots → 3 parallel lists), **Role Accumulator** (stateful, for-loop safe), and **Append Any To List** utility node (`Qwen3-TTS/Utils`).
 - **2026-02-04**: Feature Update: Added Global Pause Control (`QwenTTSConfigNode`) and `extra_model_paths.yaml` support ([update.md](doc/update.md))
 - **2026-01-29**: Feature Update: Support for loading custom fine-tuned models & speakers ([update.md](doc/update.md))
@@ -69,13 +70,31 @@ Standard TTS using preset speakers.
   - `attention`: Attention mechanism (auto, sage_attn, flash_attn, sdpa, eager).
   - `unload_model_after_generate`: Unload model from memory after generation to free GPU memory.
 
-### 4. Qwen3-TTS Role Bank (`RoleBankNode`) [New]
+### 4. Qwen3-TTS Role Bank (`RoleBankNode`)
 Collect and manage multiple voice prompts for dialogue generation.
 - **Inputs**:
   - Up to 8 roles, each with:
     - `role_name_N`: Name of the role (e.g., "Alice", "Bob", "Narrator")
     - `prompt_N`: Voice clone prompt from `VoiceClonePromptNode`
 - **Capabilities**: Create named voice registry for use in `DialogueInferenceNode`. Supports up to 8 different voices per bank.
+
+### 4b. Qwen3-TTS Role Accumulator (`RoleAccumulatorNode`) [New]
+Stateful role bank builder designed to run **inside a for-loop**. Appends one `(role_name, voice_clone_prompt)` pair per iteration; outputs a growing `QWEN3_ROLE_BANK`.
+- **Inputs**:
+  - `role_name` (STRING, forceInput): role name for this iteration.
+  - `voice_clone_prompt` (VOICE_CLONE_PROMPT): pre-extracted prompt from `VoiceClonePromptNode`.
+  - `accumulator_id` (STRING, default `"roles"`): unique key; use different IDs for parallel accumulators.
+  - `reset` (BOOLEAN): set `True` on the **first** iteration to start a fresh bank.
+- **Outputs**: `role_bank` (QWEN3_ROLE_BANK), `count` (INT)
+- **Usage**: Wire `role_bank` through the loop's `loopEnd` node; connect the final bank to `DialogueInferenceNode` **outside** the loop.
+
+```
+[For Loop Open]
+    ├─ role_name          ─►┐
+    └─ voice_clone_prompt ─►├─► [Role Accumulator] ─► role_bank ─► [Loop Close]
+                                                                          │
+                                                                  [DialogueInference]
+```
 
 ### 5. Qwen3-TTS Voice Clone Prompt (`VoiceClonePromptNode`) [New]
 Extract and reuse voice features from reference audio.
@@ -177,9 +196,10 @@ All Faster nodes accept an optional **`config`** input from `QwenTTSConfigNode`.
 ### Workflow
 
 ```
-Standard:  LoadAudio → VoiceClonePromptNode → RoleBankNode → DialogueInferenceNode
-Faster (fixed roles):   LoadAudio → RoleBankCollectorNode → FasterRoleBankNode → FasterDialogueInferenceNode
-Faster (dynamic/loop):  [For Loop] → RoleAccumulatorNode → [loopEnd] → FasterDialogueInferenceNode
+Standard (fixed roles):  LoadAudio → VoiceClonePromptNode → RoleBankNode → DialogueInferenceNode
+Standard (dynamic/loop): [For Loop] → VoiceClonePromptNode → RoleAccumulatorNode → [loopEnd] → DialogueInferenceNode
+Faster (fixed roles):    LoadAudio → RoleBankCollectorNode → FasterRoleBankNode → FasterDialogueInferenceNode
+Faster (dynamic/loop):   [For Loop] → RoleAccumulatorNode (Faster) → [loopEnd] → FasterDialogueInferenceNode
 ```
 
 ---
@@ -312,6 +332,12 @@ qwen-tts: D:\MyModels\Qwen
 - **First Run**: CUDA Graphs are captured on first inference — expect a warm-up delay. Subsequent calls are significantly faster.
 - **Dialogue**: Use `FasterRoleBankNode` (AUDIO inputs) instead of the standard `RoleBankNode` (VOICE_CLONE_PROMPT inputs).
 - **Pause config**: Connect `QwenTTSConfigNode` to the `config` input of any Faster node for punctuation-based pause control.
+
+### Dialogue Generation (Standard)
+- **Static roles**: Use `RoleBankNode` (up to 8 fixed slots).
+- **Dynamic / for-loop roles**: Use `RoleAccumulatorNode` — set `reset=True` on the first iteration, wire `role_bank` out of the loop end into `DialogueInferenceNode`.
+- **Batch Size**: Increase `batch_size` for faster generation (more VRAM usage).
+- **Pauses**: Adjust `pause_linebreak`, `period_pause`, `comma_pause`, etc. to control timing between dialogue segments.
 
 ## Acknowledgments
 
